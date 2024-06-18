@@ -1,0 +1,232 @@
+一、背景
+近期，国内云计算和容器技术社区面临了一项挑战：多个镜像加速站点被关闭。这些加速站点原本为开发者和企业提供了快速访问和下载海外 Docker 镜像的能力。多了不讲，咱们就来点实际的解决方案：
+
+镜像加速不可用List（也许后续会开放，如使用请验证）：
+
+腾讯云镜像加速器地址：https://mirror.ccs.tencentyun.com
+
+中国科学技术大学：https://docker.mirrors.ustc.edu.cn
+
+Docker官方镜像（中国区）镜像加速：https://registry.docker-cn.com
+
+网易云镜像加速器地址：http://hub-mirror.c.163.com
+
+南京大学镜像加速器地址：https://docker.nju.edu.cn
+
+镜像加速可用镜像源（还有其他类，不一一举例）：
+
+阿里云镜像加速器地址：https://XXXXX.mirror.aliyuncs.com
+
+Daocloud 镜像加速器地址：https://docker.m.daocloud.io
+
+二、加速解决方案 -- 针对 Docker 运行时
+2.1、配置阿里云镜像加速器
+阿里云提供了免费使用的镜像加速服务。以下是具体的配置步骤：
+
+登录到阿里云控制台 https://cr.console.aliyun.com/
+
+进入“镜像中心”，点击左侧菜单中的“镜像加速器”。
+
+将页面中展示的加速器地址记下来，例如 https://<your_id>.mirror.aliyuncs.com。
+
+2.2、配置 Docker 客户端
+在 Linux 或 Ubuntu 上，可以通过修改 Docker 配置文件来使用该加速器。具体步骤如下：
+
+例如，如下，大家也可以直接使用我这边的，推荐大家自己去注册一个！
+
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json <<-'EOF'
+{
+  "registry-mirrors": ["https://uw9bnv9c.mirror.aliyuncs.com"]
+}
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+配置生效验证：
+
+# docker info | grep -A1 "Registry Mirrors"
+配置多个：
+
+# cat /etc/docker/daemon.json
+{
+  "registry-mirrors": [
+        "https://uw9bnv9c.mirror.aliyuncs.com",
+        "https://docker.m.daocloud.io",
+        "https://dockerhub.timeweb.cloud"
+    ],
+  "insecure-registries": ["harbor-local.kubernets.cn"],
+  "log-driver":"json-file",
+  "log-opts": {
+    "max-size":"500m",
+    "max-file":"3"
+  }
+}
+三、加速解决方案 -- 针对 Containerd 运行时
+3.1、配置方式1：
+之后需要检查配置文件中是否有原有mirror相关的配置，如下：
+
+[plugins."io.containerd.grpc.v1.cri".registry]
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+      endpoint = ["https://docker.m.daocloud.io"]
+若有原有 mirror 相关的配置，则需要清理。
+
+执行 systemctl restart containerd 重启 Containerd。
+
+若启动失败，执行 journalctl -u containerd 检查为何失败，通常是配置文件仍有冲突导致，可以依据报错做相应调整。
+
+3.2、配置方式2（推荐）：
+Containerd 通过在启动时指定一个配置文件夹，使后续所有镜像仓库相关的配置都可以在里面热加载，无需重启 Containerd。
+
+在 /etc/containerd/config.toml 配置文件中插入如下 config_path：
+
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+更多配置说明：
+
+/etc/containerd/config.toml 非默认路径，大家可以根据实际使用情况进行调整。
+
+若已有 plugins."io.containerd.grpc.v1.cri".registry，则在下面添加一行，注意要有 Indent。若没有，则可以在任意地方写入。
+
+[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = "/etc/containerd/certs.d"
+在步骤一中指定的 config_path 路径中创建 docker.io/hosts.toml 文件。
+
+在文件中写入如下配置，更多步骤及更多加速配置文件，参考如下：
+
+server = "https://registry-1.docker.io"
+
+[host."$(镜像加速器地址，如https://xxx.mirror.aliyuncs.com)"]
+  capabilities = ["pull", "resolve", "push"]
+3.3、更多镜像加速文件：
+# docker hub镜像加速
+mkdir -p /etc/containerd/certs.d/docker.io
+cat > /etc/containerd/certs.d/docker.io/hosts.toml << EOF
+server = "https://docker.io"
+[host."https://docker.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+
+[host."https://reg-mirror.qiniu.com"]
+  capabilities = ["pull", "resolve"]
+
+EOF
+
+# registry.k8s.io镜像加速
+mkdir -p /etc/containerd/certs.d/registry.k8s.io
+tee /etc/containerd/certs.d/registry.k8s.io/hosts.toml << 'EOF'
+server = "https://registry.k8s.io"
+
+[host."https://k8s.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# docker.elastic.co镜像加速
+mkdir -p /etc/containerd/certs.d/docker.elastic.co
+tee /etc/containerd/certs.d/docker.elastic.co/hosts.toml << 'EOF'
+server = "https://docker.elastic.co"
+
+[host."https://elastic.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# gcr.io镜像加速
+mkdir -p /etc/containerd/certs.d/gcr.io
+tee /etc/containerd/certs.d/gcr.io/hosts.toml << 'EOF'
+server = "https://gcr.io"
+
+[host."https://gcr.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# ghcr.io镜像加速
+mkdir -p /etc/containerd/certs.d/ghcr.io
+tee /etc/containerd/certs.d/ghcr.io/hosts.toml << 'EOF'
+server = "https://ghcr.io"
+
+[host."https://ghcr.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# k8s.gcr.io镜像加速
+mkdir -p /etc/containerd/certs.d/k8s.gcr.io
+tee /etc/containerd/certs.d/k8s.gcr.io/hosts.toml << 'EOF'
+server = "https://k8s.gcr.io"
+
+[host."https://k8s-gcr.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# mcr.m.daocloud.io镜像加速
+mkdir -p /etc/containerd/certs.d/mcr.microsoft.com
+tee /etc/containerd/certs.d/mcr.microsoft.com/hosts.toml << 'EOF'
+server = "https://mcr.microsoft.com"
+
+[host."https://mcr.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# nvcr.io镜像加速
+mkdir -p /etc/containerd/certs.d/nvcr.io
+tee /etc/containerd/certs.d/nvcr.io/hosts.toml << 'EOF'
+server = "https://nvcr.io"
+
+[host."https://nvcr.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# quay.io镜像加速
+mkdir -p /etc/containerd/certs.d/quay.io
+tee /etc/containerd/certs.d/quay.io/hosts.toml << 'EOF'
+server = "https://quay.io"
+
+[host."https://quay.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# registry.jujucharms.com镜像加速
+mkdir -p /etc/containerd/certs.d/registry.jujucharms.com
+tee /etc/containerd/certs.d/registry.jujucharms.com/hosts.toml << 'EOF'
+server = "https://registry.jujucharms.com"
+
+[host."https://jujucharms.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# rocks.canonical.com镜像加速
+mkdir -p /etc/containerd/certs.d/rocks.canonical.com
+tee /etc/containerd/certs.d/rocks.canonical.com/hosts.toml << 'EOF'
+server = "https://rocks.canonical.com"
+
+[host."https://rocks-canonical.m.daocloud.io"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+官方 containerd 加速文档：https://github.com/containerd/containerd/blob/main/docs/hosts.md
+
+四、镜像加速站
+很多镜像都在国外，比如 gcr。国内下载很慢，需要加速。 DaoCloud 为此提供了国内镜像加速，便于从国内拉取这些镜像。
+
+使用方法：
+
+增加前缀（推荐）：
+
+k8s.gcr.io/coredns/coredns => m.daocloud.io/k8s.gcr.io/coredns/coredns
+修改镜像仓库的前缀
+
+k8s.gcr.io/coredns/coredns => k8s-gcr.m.daocloud.io/coredns/coredns
+支持前缀替换的 Registry：
+
+前缀替换的 Registry 的规则, 这是人工配置的, 有需求提 Issue.
+
+源站	替换为
+cr.l5d.io	l5d.m.daocloud.io
+docker.elastic.co	elastic.m.daocloud.io
+docker.io	docker.m.daocloud.io
+gcr.io	gcr.m.daocloud.io
+ghcr.io	ghcr.m.daocloud.io
+k8s.gcr.io	k8s-gcr.m.daocloud.io
+registry.k8s.io	k8s.m.daocloud.io
+mcr.microsoft.com	mcr.m.daocloud.io
+nvcr.io	nvcr.m.daocloud.io
+quay.io	quay.m.daocloud.io
+registry.jujucharms.com	jujucharms.m.daocloud.io
+rocks.canonical.com	rocks-canonical.m.daocloud.io
